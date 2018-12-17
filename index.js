@@ -1,84 +1,127 @@
+/**
+ * Copyright 2017, Google, Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 'use strict';
+//customize for each project name
+const callingProjectId = 'speech-samples-galvink';
+
+// Imports the Google Cloud client library and the Google Cloud Data Loss Prevention Library
+const speech = require('@google-cloud/speech');
+const DLP = require('@google-cloud/dlp');
 
 const fs = require('fs');
-const util = require('util');
 
-// Imports the Google Cloud client library
-const textToSpeech = require('@google-cloud/text-to-speech');
-const speechToText = require('@google-cloud/speech');
+async function transcribeSpeech() {
+  // Creates a client
+  const speechClient = new speech.SpeechClient();
 
-// Creates a client
-const client = new textToSpeech.TextToSpeechClient();
-
-let iteration_num = 0;
-let max_iterations = 3;
-
-let audioFileName = '';
-
-//starting text
-let starterText = 'I am sitting in a room different from the one you are in now. I am recording the sound of my speaking voice and I am going to play it back into the room again and again until the resonant frequencies of the room reinforce themselves so that any semblance of my speech, with perhaps the exception of rhythm, is destroyed. What you will hear, then, are the natural resonant frequencies of the room articulated by speech. I regard this activity not so much as a demonstration of a physical fact, but more as a way to smooth out any irregularities my speech might have.';
-
-async function speakText(text) {
-  if (iteration_num < max_iterations) {
-    // Construct the request
-    const request = {
-      input: {text: text},
-      // Select the language and SSML Voice Gender (optional)
-      voice: {languageCode: 'en-US', ssmlGender: 'NEUTRAL'},
-      // Select the type of audio encoding
-      audioConfig: {audioEncoding: 'LINEAR16'},
-    };
-
-    // Performs the Text-to-Speech request
-    const [response] = await client.synthesizeSpeech(request);
-    // Write the binary audio content to a local file
-    const writeFile = util.promisify(fs.writeFile);
-    audioFileName = 'i_am_sitting_' + iteration_num + '.raw';
-    await writeFile(audioFileName, response.audioContent, 'binary');
-    console.log('Audio content written to file: ' + audioFileName);
-    iteration_num++;
-    writeSpeech();
-  }
-  else {
-    console.log('Audio content complete');
-    return;
-  }
-
-
-}
-
-speakText(starterText).catch(console.error);
-
-async function writeSpeech() {
-
-  const client = new speechToText.SpeechClient();
+  // The name of the audio file to transcribe
+  const fileName = './resources/sallybrown.flac';
+  const encoding = 'FLAC';
+  const sampleRateHertz = 16000;
+  const languageCode = 'en-US';
 
   // Reads a local audio file and converts it to base64
-  const file = fs.readFileSync(audioFileName);
+  const file = fs.readFileSync(fileName);
   const audioBytes = file.toString('base64');
 
-  // The audio file's encoding, sample rate in hertz, and BCP-47 language code
   const audio = {
     content: audioBytes,
   };
   const config = {
-    encoding: 'LINEAR16',
-    sampleRateHertz: 24000,
-    languageCode: 'en-US',
-    maxAlternatives: 10,
+    encoding: encoding,
+    sampleRateHertz: sampleRateHertz,
+    languageCode: languageCode,
+    enableAutomaticPunctuation: true,
   };
-  const request = {
+  const speechRequest = {
     audio: audio,
     config: config,
   };
 
   // Detects speech in the audio file
-  const [response] = await client.recognize(request);
-  const transcription = response.results
+  const [speechResponse] = await speechClient.recognize(speechRequest);
+  const transcription = speechResponse.results
     .map(result => result.alternatives[0].transcript)
     .join('\n');
-  console.log(`Transcription: ${transcription}`);
-
-  speakText(transcription);
+  console.log(`Original transcript: ${transcription}`);
+  // Check transcription for email address, since speech-to-text returns " at " instead of "@"
+  // Format manually before sending to DLP api
+  // Currently social security numbers and credit card numbers are interpreted as phone numbers
+  const updatedTranscription = updateEmail(transcription);
+  deidentifyText(updatedTranscription);
 }
-//main().catch(console.error);
+
+function updateEmail(transcription) {
+  //regex string replacement for catching *some* email addresses using " at " instead of "@", and then formatting them for the DLP API
+  const emailRegex = /([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*)(\sat\s+)((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9]))/g;
+  transcription = transcription.replace(emailRegex, '$1@$3');
+  console.log(`Email addresses reformatted: ${transcription}`);
+  return transcription;
+}
+
+async function deidentifyText(transcription) {
+  // Creates a DLP Service Client
+  const dlpClient = new DLP.DlpServiceClient();
+
+  // Construct DLP request
+  const item = {value: transcription};
+
+  const infoTypes = [
+    {name: 'PHONE_NUMBER'},
+    {name: 'EMAIL_ADDRESS'},
+    {name: 'CREDIT_CARD_NUMBER'},
+    {name: 'US_SOCIAL_SECURITY_NUMBER'},
+  ];
+
+  const primitiveTransformation = {
+    characterMaskConfig: {
+      maskingCharacter: '*',
+    },
+  };
+
+  const transformations = [
+    {
+      infoTypes: infoTypes,
+      primitiveTransformation: primitiveTransformation,
+    },
+  ];
+
+  const infoTypeTransformations = {transformations: transformations};
+
+  const dlpConfig = {infoTypeTransformations: infoTypeTransformations};
+
+  const inspectConfig = {infoTypes: infoTypes};
+
+  const dlpRequest = {
+    parent: dlpClient.projectPath(callingProjectId),
+    deidentifyConfig: dlpConfig,
+    inspectConfig: inspectConfig,
+    item: item,
+  };
+
+  try {
+    const [response] = await dlpClient.deidentifyContent(dlpRequest);
+    const deidentifiedItem = response.item;
+    console.log(
+      `Final Result with sensitive content redacted: ${deidentifiedItem.value}`
+    );
+  } catch (err) {
+    console.log(`Error in deidentifyWithMask: ${err.message || err}`);
+  }
+}
+
+transcribeSpeech().catch(console.error);
+// [END speech-to-text-to-dlp sample]
