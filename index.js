@@ -1,127 +1,73 @@
-/**
- * Copyright 2017, Google, Inc.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *    http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+const record = require('node-record-lpcm16');
 
-'use strict';
-//customize for each project name
-const callingProjectId = 'speech-samples-galvink';
-
-// Imports the Google Cloud client library and the Google Cloud Data Loss Prevention Library
+// Imports the Google Cloud client library
 const speech = require('@google-cloud/speech');
-const DLP = require('@google-cloud/dlp');
 
-const fs = require('fs');
+// Creates a client
+const client = new speech.SpeechClient();
 
-async function transcribeSpeech() {
-  // Creates a client
-  const speechClient = new speech.SpeechClient();
+/**
+ * TODO(developer): Uncomment the following lines before running the sample.
+ */
+ const encoding = 'LINEAR16';
+ const sampleRateHertz = 16000;
+ const languageCode = 'en-US';
 
-  // The name of the audio file to transcribe
-  const fileName = './resources/sallybrown.flac';
-  const encoding = 'FLAC';
-  const sampleRateHertz = 16000;
-  const languageCode = 'en-US';
-
-  // Reads a local audio file and converts it to base64
-  const file = fs.readFileSync(fileName);
-  const audioBytes = file.toString('base64');
-
-  const audio = {
-    content: audioBytes,
-  };
-  const config = {
+const request = {
+  config: {
     encoding: encoding,
     sampleRateHertz: sampleRateHertz,
     languageCode: languageCode,
-    enableAutomaticPunctuation: true,
-  };
-  const speechRequest = {
-    audio: audio,
-    config: config,
-  };
+  },
+  interimResults: false, // If you want interim results, set this to true
+};
 
-  // Detects speech in the audio file
-  const [speechResponse] = await speechClient.recognize(speechRequest);
-  const transcription = speechResponse.results
-    .map(result => result.alternatives[0].transcript)
-    .join('\n');
-  console.log(`Original transcript: ${transcription}`);
-  // Check transcription for email address, since speech-to-text returns " at " instead of "@"
-  // Format manually before sending to DLP api
-  // Currently social security numbers and credit card numbers are interpreted as phone numbers
-  const updatedTranscription = updateEmail(transcription);
-  deidentifyText(updatedTranscription);
-}
+// Create a recognize stream
+const recognizeStream = client
+  .streamingRecognize(request)
+  .on('error', console.error)
+  .on('data', data =>
+    process.stdout.write(
+      data.results[0] && data.results[0].alternatives[0]
+        ? `Transcription: ${data.results[0].alternatives[0].transcript}\n`
+        : `\n\nDone. press Ctrl+C\n`
+    )
+  );
 
-function updateEmail(transcription) {
-  //regex string replacement for catching *some* email addresses using " at " instead of "@", and then formatting them for the DLP API
-  const emailRegex = /([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*)(\sat\s+)((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9]))/g;
-  transcription = transcription.replace(emailRegex, '$1@$3');
-  console.log(`Email addresses reformatted: ${transcription}`);
-  return transcription;
-}
+// Start recording and send the microphone input to the Speech API
+//function recordMic(){
+  record
+    .start({
+      sampleRateHertz: sampleRateHertz,
+      threshold: 0,
+      // Other options, see https://www.npmjs.com/package/node-record-lpcm16#options
+      verbose: false,
+      recordProgram: 'rec', // Try also "arecord" or "sox"
+      silence: '10.0',
+    })
+    .on('error', console.error)
+    .pipe(recognizeStream);
+//}
 
-async function deidentifyText(transcription) {
-  // Creates a DLP Service Client
-  const dlpClient = new DLP.DlpServiceClient();
+//recordMic();
+console.log('Listening, press Ctrl+C to stop.');
 
-  // Construct DLP request
-  const item = {value: transcription};
+//let startTime = new Date().getMilliseconds();
+//console.log('startTime in ms: ' + startTime);
 
-  const infoTypes = [
-    {name: 'PHONE_NUMBER'},
-    {name: 'EMAIL_ADDRESS'},
-    {name: 'CREDIT_CARD_NUMBER'},
-    {name: 'US_SOCIAL_SECURITY_NUMBER'},
-  ];
+//let timeFlag = true;
 
-  const primitiveTransformation = {
-    characterMaskConfig: {
-      maskingCharacter: '*',
-    },
-  };
+/*while(timeFlag){
+  let newTime = new Date().getMilliseconds();
+  let estimatedTime = newTime - startTime;
+  if (estimatedTime >= 55000) {
+    console.log("exceeded maximum time, buffering")
+    recognizeStream.closeSend();
+    recordMic();
 
-  const transformations = [
-    {
-      infoTypes: infoTypes,
-      primitiveTransformation: primitiveTransformation,
-    },
-  ];
-
-  const infoTypeTransformations = {transformations: transformations};
-
-  const dlpConfig = {infoTypeTransformations: infoTypeTransformations};
-
-  const inspectConfig = {infoTypes: infoTypes};
-
-  const dlpRequest = {
-    parent: dlpClient.projectPath(callingProjectId),
-    deidentifyConfig: dlpConfig,
-    inspectConfig: inspectConfig,
-    item: item,
-  };
-
-  try {
-    const [response] = await dlpClient.deidentifyContent(dlpRequest);
-    const deidentifiedItem = response.item;
-    console.log(
-      `Final Result with sensitive content redacted: ${deidentifiedItem.value}`
-    );
-  } catch (err) {
-    console.log(`Error in deidentifyWithMask: ${err.message || err}`);
+    startTime = new Date().getMilliseconds();
   }
-}
-
-transcribeSpeech().catch(console.error);
-// [END speech-to-text-to-dlp sample]
+  else {
+    //console.log("not sure what to do now");
+  }
+}*/
