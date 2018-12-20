@@ -14,6 +14,7 @@
     "@google-cloud/speech": "^2.1.1",
     "@google-cloud/text-to-speech": "^0.4.0",
     "express": "^4.16.4",
-    "node-record-lpcm16": "^0.3.1"
+    "node-record-lpcm16": "^0.3.1",
+    "util": "^0.11.1"
   }
 }
